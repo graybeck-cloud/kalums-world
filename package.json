@@ -1,0 +1,13 @@
+{
+  "name": "kalums-world",
+  "version": "1.0.0",
+  "description": "Kalum's World — a Nordic voxel-free adventure (Vercel + Supabase)",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4"
+  }
+}
