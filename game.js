@@ -50,6 +50,11 @@
     boardBtn: document.getElementById("boardBtn"),
     board: document.getElementById("board"),
     boardList: document.getElementById("boardList"),
+    shopBtn: document.getElementById("shopBtn"),
+    shop: document.getElementById("shop"),
+    shopList: document.getElementById("shopList"),
+    shopGold: document.getElementById("shopGold"),
+    shopClose: document.getElementById("shopClose"),
     bossBar: document.getElementById("bossBar"),
     bossName: document.getElementById("bossName"),
     bossFill: document.getElementById("bossFill"),
@@ -447,6 +452,26 @@
     torso.position.y = 1.0;
     torso.castShadow = true;
     hero.add(torso);
+    heroParts.tunicMat = tunic; // recolored when armor changes
+
+    // armor plating overlay (chestplate + pauldrons), shown for plated tiers
+    const plateMat = new THREE.MeshStandardMaterial({ color: 0xc7d0db, roughness: 0.32, metalness: 0.8 });
+    heroParts.plateMat = plateMat;
+    const armorRig = new THREE.Group();
+    const chestplate = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.35, 0.5, 12), plateMat);
+    chestplate.position.y = 1.04;
+    chestplate.castShadow = true;
+    armorRig.add(chestplate);
+    const pauldronGeo = new THREE.SphereGeometry(0.13, 12, 10);
+    const pauldronL = new THREE.Mesh(pauldronGeo, plateMat);
+    const pauldronR = new THREE.Mesh(pauldronGeo, plateMat);
+    pauldronL.position.set(-0.3, 1.3, 0);
+    pauldronR.position.set(0.3, 1.3, 0);
+    pauldronL.castShadow = pauldronR.castShadow = true;
+    armorRig.add(pauldronL, pauldronR);
+    armorRig.visible = false;
+    hero.add(armorRig);
+    heroParts.armorRig = armorRig;
 
     // head + helmet
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 18, 16), skin);
@@ -525,6 +550,18 @@
   }
   buildHero();
 
+  // Reflect the equipped armor on the hero model (tunic colour + metal plating).
+  function applyArmorVisual() {
+    const a = currentArmor();
+    if (heroParts.tunicMat) heroParts.tunicMat.color.setHex(a.tunic);
+    if (heroParts.armorRig) heroParts.armorRig.visible = !!a.plate;
+    if (a.plate && heroParts.plateMat) {
+      heroParts.plateMat.color.setHex(a.plate);
+      heroParts.plateMat.emissive.setHex(a.emissive || 0x000000);
+    }
+  }
+  applyArmorVisual();
+
   // =========================================================================
   //  PLAYER STATE
   // =========================================================================
@@ -581,7 +618,31 @@
     enemiesDefeated: 0,
     bossWins: 0,
     score: 0,
+    armorTier: 0,
   };
+
+  // =========================================================================
+  //  ARMOR (purchased with gold at the Armorsmith)
+  //   - reduce:  fraction of incoming damage blocked
+  //   - bonusHp: extra max health on top of the base 100
+  //   Tiers are bought in order; prices scale with how much tougher you get.
+  //   Early foes drop ~8-18 gold, so the leather suit is a handful of kills,
+  //   while the frostforged plate is a long-term goal (a couple of boss wins).
+  // =========================================================================
+  const BASE_HEALTH = 100;
+  const ARMORS = [
+    { name: "Wanderer's Tunic",   icon: "👕", cost: 0,    reduce: 0.00, bonusHp: 0,   tunic: 0x3a5d8f, plate: null,     emissive: 0x000000, desc: "Plain cloth — no protection at all." },
+    { name: "Leather Jerkin",     icon: "🟫", cost: 120,  reduce: 0.15, bonusHp: 20,  tunic: 0x6e4a2a, plate: null,     emissive: 0x000000, desc: "Toughened hide softens the worst hits." },
+    { name: "Chainmail Hauberk",  icon: "⛓️", cost: 320,  reduce: 0.30, bonusHp: 40,  tunic: 0x4a4f57, plate: 0x9aa4b2, emissive: 0x000000, desc: "Interlocking rings turn aside steel." },
+    { name: "Iron Plate",         icon: "🛡️", cost: 700,  reduce: 0.45, bonusHp: 70,  tunic: 0x3d4248, plate: 0xc7d0db, emissive: 0x000000, desc: "Heavy forged plates. Serious defense." },
+    { name: "Frostforged Plate",  icon: "❄️", cost: 1400, reduce: 0.60, bonusHp: 120, tunic: 0x2f5a7a, plate: 0x9fe0ff, emissive: 0x1a3f5e, desc: "Enchanted ice-steel of the far north." },
+  ];
+  function currentArmor() {
+    return ARMORS[clamp(stats.armorTier | 0, 0, ARMORS.length - 1)];
+  }
+  function maxHealth() {
+    return BASE_HEALTH + currentArmor().bonusHp;
+  }
 
   const combat = { swing: 0, cooldown: 0, power: 2 };
   const lastPos = new THREE.Vector3();
@@ -766,7 +827,7 @@
     const reward = 130 + stats.level * 22;
     stats.coins += reward;
     addXp(160);
-    stats.health = 100;
+    stats.health = maxHealth();
     for (let i = 0; i < 7; i++) spawnParticles(boss.x, boss.y + 1.2, boss.z, [0xffce6b, 0xbfe6ff, 0x9ad0ff][i % 3], 22, 5);
     camShake = 0.9;
     blip(720, 0.5, "triangle", 0.18);
@@ -855,7 +916,7 @@
     while (stats.xp >= xpToNext(stats.level)) {
       stats.xp -= xpToNext(stats.level);
       stats.level += 1;
-      stats.health = Math.min(100, stats.health + 14);
+      stats.health = Math.min(maxHealth(), stats.health + 14);
       stats.energy = 100;
       combat.power = 2 + Math.floor(stats.level * 0.4);
       leveled = true;
@@ -871,11 +932,17 @@
 
   function applyDamage(amount, reason) {
     if (damageCooldown > 0) return;
-    stats.health = Math.max(0, stats.health - amount);
+    const reduce = currentArmor().reduce;
+    const dealt = Math.max(reduce > 0 ? 1 : 0, Math.round(amount * (1 - reduce)));
+    stats.health = Math.max(0, stats.health - dealt);
     damageCooldown = 0.7;
     camShake = Math.min(0.55, camShake + 0.25);
     blip(170, 0.12, "sawtooth", 0.2);
     if (reason) showToast(reason);
+    // armor sparks when a hit is partly blocked
+    if (reduce > 0 && amount - dealt >= 1) {
+      spawnParticles(player.pos.x, player.pos.y + 1.0, player.pos.z, currentArmor().plate || 0xc7d0db, 8, 2.6);
+    }
   }
 
   function showToast(msg) {
@@ -926,8 +993,9 @@
   // =========================================================================
   function renderStats() {
     stats.score = computeScore();
-    ui.healthFill.style.width = `${stats.health}%`;
-    ui.healthText.textContent = `${Math.round(stats.health)} / 100`;
+    const hpMax = maxHealth();
+    ui.healthFill.style.width = `${Math.min(100, (stats.health / hpMax) * 100)}%`;
+    ui.healthText.textContent = `${Math.round(stats.health)} / ${hpMax}`;
     ui.energyFill.style.width = `${stats.energy}%`;
     ui.energyText.textContent = `${Math.round(stats.energy)} / 100`;
     const next = xpToNext(stats.level);
@@ -944,6 +1012,82 @@
   function setBackendBadge(online, text) {
     ui.backendDot.style.background = online ? "#54d27a" : "#7c8895";
     ui.backendText.textContent = text || (online ? "Backend Online" : "Backend Offline");
+  }
+
+  // =========================================================================
+  //  ARMORSMITH SHOP
+  // =========================================================================
+  function renderShop() {
+    ui.shopGold.innerHTML = `Gold: <b>${stats.coins}</b>`;
+    const tier = clamp(stats.armorTier | 0, 0, ARMORS.length - 1);
+    let html = "";
+    for (let i = 0; i < ARMORS.length; i++) {
+      const a = ARMORS[i];
+      const statLine =
+        i === 0
+          ? "No protection"
+          : `−${Math.round(a.reduce * 100)}% damage · +${a.bonusHp} max HP`;
+      let rowClass = "armorRow";
+      let btn;
+      if (i < tier || (i === 0 && tier === 0)) {
+        if (i === tier) {
+          rowClass += " equipped";
+          btn = `<button class="armorBuy equipped" disabled>Equipped</button>`;
+        } else {
+          btn = `<button class="armorBuy owned" disabled>Owned</button>`;
+        }
+      } else if (i === tier) {
+        rowClass += " equipped";
+        btn = `<button class="armorBuy equipped" disabled>Equipped</button>`;
+      } else if (i === tier + 1) {
+        const afford = stats.coins >= a.cost;
+        btn = `<button class="armorBuy" data-tier="${i}" ${afford ? "" : "disabled"}>Buy · ${a.cost}g</button>`;
+      } else {
+        rowClass += " locked";
+        btn = `<button class="armorBuy" disabled>${a.cost}g</button>`;
+      }
+      html +=
+        `<div class="${rowClass}">` +
+        `<div class="armorIcon">${a.icon}</div>` +
+        `<div class="armorInfo"><div class="nm">${a.name}</div>` +
+        `<div class="ds">${a.desc}</div>` +
+        `<div class="st">${statLine}</div></div>` +
+        btn +
+        `</div>`;
+    }
+    ui.shopList.innerHTML = html;
+    ui.shopList.querySelectorAll(".armorBuy[data-tier]").forEach((b) => {
+      b.addEventListener("click", () => buyArmor(+b.getAttribute("data-tier")));
+    });
+  }
+
+  function buyArmor(tier) {
+    tier = tier | 0;
+    // armor is upgraded one tier at a time
+    if (tier !== (stats.armorTier | 0) + 1 || tier >= ARMORS.length) return;
+    const a = ARMORS[tier];
+    if (stats.coins < a.cost) {
+      showToast("Not enough gold for that armor.");
+      blip(160, 0.14, "sawtooth", 0.16);
+      return;
+    }
+    const prevBonus = currentArmor().bonusHp;
+    stats.coins -= a.cost;
+    stats.armorTier = tier;
+    // grant the freshly-added max-health as bonus survivability
+    stats.health = Math.min(maxHealth(), stats.health + (a.bonusHp - prevBonus));
+    applyArmorVisual();
+    spawnParticles(player.pos.x, player.pos.y + 1.1, player.pos.z, a.plate || 0xffce6b, 18, 4);
+    blip(680, 0.16, "triangle", 0.16);
+    showToast(`🛡️ Equipped ${a.name}! −${Math.round(a.reduce * 100)}% damage taken.`);
+    renderShop();
+    renderStats();
+  }
+
+  function toggleShop() {
+    if (!started) return;
+    ui.shop.classList.toggle("hidden");
+    if (!ui.shop.classList.contains("hidden")) renderShop();
   }
 
   // =========================================================================
@@ -1028,6 +1172,7 @@
             distance: +stats.distance.toFixed(2),
             survivedSeconds: +stats.survivedSeconds.toFixed(2),
             score: stats.score,
+            armorTier: stats.armorTier | 0,
           },
         },
       });
@@ -1051,7 +1196,8 @@
         player.pos.set(sv.position.x, sv.position.y, sv.position.z);
       }
       if (sv.stats) {
-        stats.health = clamp(+sv.stats.health || 100, 1, 100);
+        stats.armorTier = clamp((+sv.stats.armorTier || 0) | 0, 0, ARMORS.length - 1);
+        stats.health = clamp(+sv.stats.health || maxHealth(), 1, maxHealth());
         stats.energy = clamp(+sv.stats.energy || 100, 0, 100);
         stats.coins = (+sv.stats.coins || 0) | 0;
         stats.cores = (+sv.stats.cores || 0) | 0;
@@ -1061,6 +1207,7 @@
         stats.survivedSeconds = +sv.stats.survivedSeconds || 0;
         combat.power = 2 + Math.floor(stats.level * 0.4);
         coresForBoss = Math.max(5, Math.ceil((stats.cores + 1) / 8) * 8 - 3);
+        applyArmorVisual();
       }
       if (Number.isFinite(+sv.cameraMode)) cameraMode = +sv.cameraMode === 0 ? 0 : 1;
       showToast("Loaded your saved adventure.");
@@ -1597,7 +1744,7 @@
         stats.cores++;
         stats.coins += 10;
         addXp(24);
-        stats.health = Math.min(100, stats.health + 4);
+        stats.health = Math.min(maxHealth(), stats.health + 4);
         spawnParticles(r.mesh.position.x, r.mesh.position.y, r.mesh.position.z, 0x6ff0d8, 16, 3.6);
         blip(900, 0.1, "triangle", 0.14);
         checkQuest();
@@ -1708,7 +1855,7 @@
   }
 
   async function onKO() {
-    stats.health = 60;
+    stats.health = Math.round(maxHealth() * 0.6);
     stats.energy = 100;
     if (boss.active) {
       boss.active = false;
@@ -1834,6 +1981,8 @@
   });
   ui.saveBtn.addEventListener("click", () => saveProgress(true));
   ui.musicBtn.addEventListener("click", () => toggleMusic());
+  ui.shopBtn.addEventListener("click", () => toggleShop());
+  ui.shopClose.addEventListener("click", () => ui.shop.classList.add("hidden"));
   ui.boardBtn.addEventListener("click", async () => {
     if (!started) return;
     ui.board.classList.toggle("hidden");

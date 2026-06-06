@@ -2,7 +2,7 @@
 
 A realistic Nordic 3D adventure built with Three.js, deployed on **Vercel** with a **Supabase** Postgres backend for saves and a global leaderboard.
 
-Play: explore snowy wilds, gather glowing runestones, battle frost creatures, and defeat the Frost King.
+Play: explore snowy wilds, gather glowing runestones, battle frost creatures, spend your gold on armor at the Armorsmith, and defeat the Frost King.
 
 ## Stack
 
@@ -41,3 +41,5 @@ Apply `supabase/schema.sql` to your Supabase project (via the SQL editor or MCP)
 ## Controls
 
 WASD move · Mouse look · Left-Click sword · Space jump (stomp foes) · Shift sprint · F5 camera · M music
+
+Tap the **🛡️ Armor** button to open the Armorsmith and trade gold (earned from kills, runestones, and quests) for armor. Each suit reduces incoming damage and raises your max health.
