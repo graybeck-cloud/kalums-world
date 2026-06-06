@@ -57,12 +57,20 @@
     modeBadge: document.getElementById("modeBadge"),
     vignette: document.getElementById("vignette"),
     toast: document.getElementById("toast"),
+    touch: document.getElementById("touch"),
+    joy: document.getElementById("joy"),
+    joyKnob: document.getElementById("joyKnob"),
+    btnSprint: document.getElementById("btnSprint"),
+    btnJump: document.getElementById("btnJump"),
+    btnAttack: document.getElementById("btnAttack"),
   };
 
   // ---------------------------------------------------------------- renderer
+  const isTouch = window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+
   const canvas = document.getElementById("c");
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isTouch ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -555,6 +563,11 @@
   const keys = Object.create(null);
   const mouseButtons = { left: false, right: false };
   let started = false;
+
+  // touch controls state
+  const touchMove = { id: null, fwd: 0, strafe: 0 };
+  const touchLook = { id: null, x: 0, y: 0 };
+  const touchBtn = { jump: false, sprint: false };
 
   const stats = {
     health: 100,
@@ -1197,7 +1210,7 @@
     keys[e.code] = false;
   });
   canvas.addEventListener("mousedown", (e) => {
-    if (!started) return;
+    if (!started || isTouch) return;
     if (!locked) {
       requestLock();
       return;
@@ -1218,6 +1231,104 @@
     mouseButtons.left = mouseButtons.right = false;
   });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // =========================================================================
+  //  TOUCH CONTROLS (iPad / phones)
+  // =========================================================================
+  function setupTouch() {
+    const joy = ui.joy;
+    const knob = ui.joyKnob;
+    const R = 46;
+
+    function joyFrom(t) {
+      const rect = joy.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      let dx = t.clientX - cx;
+      let dy = t.clientY - cy;
+      const d = Math.hypot(dx, dy);
+      if (d > R) {
+        dx = (dx / d) * R;
+        dy = (dy / d) * R;
+      }
+      knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      touchMove.strafe = dx / R;
+      touchMove.fwd = -dy / R;
+    }
+    function resetJoy() {
+      touchMove.id = null;
+      touchMove.fwd = 0;
+      touchMove.strafe = 0;
+      knob.style.transform = "translate(0,0)";
+    }
+
+    joy.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      touchMove.id = t.identifier;
+      joyFrom(t);
+    }, { passive: false });
+    joy.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      for (const t of e.changedTouches) if (t.identifier === touchMove.id) joyFrom(t);
+    }, { passive: false });
+    const endJoy = (e) => {
+      for (const t of e.changedTouches) if (t.identifier === touchMove.id) resetJoy();
+    };
+    joy.addEventListener("touchend", endJoy, { passive: false });
+    joy.addEventListener("touchcancel", () => resetJoy(), { passive: false });
+
+    // look: drags anywhere on the canvas that aren't on a control
+    canvas.addEventListener("touchstart", (e) => {
+      if (!started) return;
+      for (const t of e.changedTouches) {
+        if (touchLook.id === null) {
+          touchLook.id = t.identifier;
+          touchLook.x = t.clientX;
+          touchLook.y = t.clientY;
+        }
+      }
+    }, { passive: false });
+    canvas.addEventListener("touchmove", (e) => {
+      if (!started) return;
+      e.preventDefault();
+      for (const t of e.changedTouches) {
+        if (t.identifier === touchLook.id) {
+          camYaw -= (t.clientX - touchLook.x) * 0.005;
+          camPitch -= (t.clientY - touchLook.y) * 0.005;
+          camPitch = clamp(camPitch, -0.4, 1.2);
+          touchLook.x = t.clientX;
+          touchLook.y = t.clientY;
+        }
+      }
+    }, { passive: false });
+    const endLook = (e) => {
+      for (const t of e.changedTouches) if (t.identifier === touchLook.id) touchLook.id = null;
+    };
+    canvas.addEventListener("touchend", endLook, { passive: false });
+    canvas.addEventListener("touchcancel", endLook, { passive: false });
+
+    const bind = (el, on, off) => {
+      el.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        on();
+      }, { passive: false });
+      const up = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (off) off();
+      };
+      el.addEventListener("touchend", up, { passive: false });
+      el.addEventListener("touchcancel", up, { passive: false });
+    };
+    bind(ui.btnJump, () => { touchBtn.jump = true; }, () => { touchBtn.jump = false; });
+    bind(ui.btnAttack, () => { mouseButtons.left = true; swingSword(); }, () => { mouseButtons.left = false; });
+    bind(ui.btnSprint, () => {
+      touchBtn.sprint = !touchBtn.sprint;
+      ui.btnSprint.classList.toggle("on", touchBtn.sprint);
+    }, null);
+  }
 
   // =========================================================================
   //  COMBAT
@@ -1291,31 +1402,28 @@
   function updateMovement(dt) {
     const sinY = Math.sin(camYaw);
     const cosY = Math.cos(camYaw);
-    let mx = 0;
-    let mz = 0;
-    if (keys.KeyW) {
-      mx -= sinY;
-      mz -= cosY;
-    }
-    if (keys.KeyS) {
-      mx += sinY;
-      mz += cosY;
-    }
-    if (keys.KeyA) {
-      mx -= cosY;
-      mz += sinY;
-    }
-    if (keys.KeyD) {
-      mx += cosY;
-      mz -= sinY;
-    }
-    const moving = mx !== 0 || mz !== 0;
+    let fwd = 0;
+    let strafe = 0;
+    if (keys.KeyW) fwd += 1;
+    if (keys.KeyS) fwd -= 1;
+    if (keys.KeyA) strafe -= 1;
+    if (keys.KeyD) strafe += 1;
+    fwd += touchMove.fwd;
+    strafe += touchMove.strafe;
+    fwd = Math.max(-1, Math.min(1, fwd));
+    strafe = Math.max(-1, Math.min(1, strafe));
+    let mx = fwd * -sinY + strafe * cosY;
+    let mz = fwd * -cosY + strafe * -sinY;
+    const moving = Math.abs(fwd) > 0.06 || Math.abs(strafe) > 0.06;
     if (moving) {
-      const l = Math.hypot(mx, mz);
+      const l = Math.hypot(mx, mz) || 1;
       mx /= l;
       mz /= l;
+    } else {
+      mx = 0;
+      mz = 0;
     }
-    const sprint = moving && (keys.ShiftLeft || keys.ShiftRight) && stats.energy > 6;
+    const sprint = moving && ((keys.ShiftLeft || keys.ShiftRight) || touchBtn.sprint) && stats.energy > 6;
     const sneak = keys.ControlLeft || keys.ControlRight;
     const speed = sprint ? 9.2 : sneak ? 3.0 : 5.6;
     stats.energy = sprint ? Math.max(0, stats.energy - 26 * dt) : Math.min(100, stats.energy + 20 * dt);
@@ -1331,7 +1439,7 @@
     // gravity + jump
     const groundY = terrainHeight(player.pos.x, player.pos.z);
     player.vy -= 23 * dt;
-    if (keys.Space && player.onGround && stats.energy >= 8) {
+    if ((keys.Space || touchBtn.jump) && player.onGround && stats.energy >= 8) {
       player.vy = 8.6;
       player.onGround = false;
       stats.energy = Math.max(0, stats.energy - 8);
@@ -1687,7 +1795,12 @@
     ui.start.classList.add("hidden");
     ui.hud.classList.remove("hidden");
     ui.board.classList.add("hidden");
-    requestLock();
+    if (isTouch) {
+      ui.touch.classList.remove("hidden");
+      ui.hint.textContent = "Left stick = move · Drag screen = look · Buttons = jump & attack";
+    } else {
+      requestLock();
+    }
     await loadSave();
     await loadProfile();
     renderStats();
@@ -1748,6 +1861,7 @@
     lastPos.copy(player.pos);
     chooseQuest();
     renderStats();
+    if (isTouch) setupTouch();
     await loadLeaderboard();
     loop();
   }
