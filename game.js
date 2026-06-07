@@ -1,9 +1,22 @@
+import * as THREE from "three";
+import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { Water } from "three/examples/jsm/objects/Water.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
+
 (async function () {
   "use strict";
 
   // =========================================================================
   //  Kalum's World — Realistic Nordic Adventure
   //  Smooth procedural terrain, pine forests, snowy peaks, frost creatures.
+  //  Rendering: Three.js (PBR + procedural textures), atmospheric Sky &
+  //  reflective Water, and a post-processing stack (SSAO, bloom, FXAA).
   // =========================================================================
 
   const API_ROOT = location.protocol.startsWith("http")
@@ -56,6 +69,7 @@
     shopGold: document.getElementById("shopGold"),
     shopClose: document.getElementById("shopClose"),
     potionBtn: document.getElementById("potionBtn"),
+    gfxBtn: document.getElementById("gfxBtn"),
     interactPrompt: document.getElementById("interactPrompt"),
     interactText: document.getElementById("interactText"),
     dialogue: document.getElementById("dialogue"),
@@ -81,90 +95,174 @@
   // ---------------------------------------------------------------- renderer
   const isTouch = window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
 
+  // Graphics quality tier. High = post-processing (SSAO, bloom), MSAA, larger
+  // shadow & water reflection maps. Low = lighter pipeline for touch / weaker
+  // GPUs. Auto-detected, toggleable at runtime with the ✨ button.
+  const gfx = {
+    high: !isTouch && (navigator.hardwareConcurrency || 4) > 4,
+  };
+  function maxPixelRatio() {
+    return gfx.high ? Math.min(window.devicePixelRatio, 2) : Math.min(window.devicePixelRatio, 1.4);
+  }
+
   const canvas = document.getElementById("c");
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isTouch ? 1.5 : 2));
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+  renderer.setPixelRatio(maxPixelRatio());
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  if ("outputEncoding" in renderer) renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.0;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0xbdd4e6, 0.0085);
+  scene.fog = new THREE.FogExp2(0xbcd2e0, 0.0042);
 
-  const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 900);
+  const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.3, 6000);
 
   // ---------------------------------------------------------------- lights
-  const hemi = new THREE.HemisphereLight(0xcfe6ff, 0x44505a, 0.9);
+  const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x4a4636, 1.1);
   scene.add(hemi);
 
-  const sun = new THREE.DirectionalLight(0xfff1d8, 1.5);
+  const sun = new THREE.DirectionalLight(0xfff1d8, 3.0);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(gfx.high ? 4096 : 2048, gfx.high ? 4096 : 2048);
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 320;
-  sun.shadow.camera.left = -70;
-  sun.shadow.camera.right = 70;
-  sun.shadow.camera.top = 70;
-  sun.shadow.camera.bottom = -70;
-  sun.shadow.bias = -0.0004;
+  sun.shadow.camera.far = 360;
+  sun.shadow.camera.left = -80;
+  sun.shadow.camera.right = 80;
+  sun.shadow.camera.top = 80;
+  sun.shadow.camera.bottom = -80;
+  sun.shadow.bias = -0.0003;
+  sun.shadow.normalBias = 0.04;
   scene.add(sun);
   scene.add(sun.target);
 
-  const ambient = new THREE.AmbientLight(0xb9cfe0, 0.25);
+  const ambient = new THREE.AmbientLight(0xb9cfe0, 0.35);
   scene.add(ambient);
 
-  // ---------------------------------------------------------------- sky dome
-  const skyUniforms = {
-    top: { value: new THREE.Color(0x2f6ea8) },
-    bottom: { value: new THREE.Color(0xcfe6f5) },
-    offset: { value: 40 },
-    exponent: { value: 0.7 },
-  };
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(600, 32, 16),
-    new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: false,
-      uniforms: skyUniforms,
-      vertexShader:
-        "varying vec3 vP; void main(){ vec4 wp = modelMatrix*vec4(position,1.0); vP = wp.xyz; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
-      fragmentShader:
-        "varying vec3 vP; uniform vec3 top; uniform vec3 bottom; uniform float offset; uniform float exponent; void main(){ float h = normalize(vP + vec3(0.0, offset, 0.0)).y; float t = pow(max(h,0.0), exponent); gl_FragColor = vec4(mix(bottom, top, clamp(t,0.0,1.0)), 1.0); }",
-    })
-  );
-  sky.frustumCulled = false;
+  // ---------------------------------------------------------------- sky (atmospheric scattering)
+  const sky = new Sky();
+  sky.scale.setScalar(3000);
   scene.add(sky);
+  const skyU = sky.material.uniforms;
+  skyU["turbidity"].value = 7;
+  skyU["rayleigh"].value = 2.2;
+  skyU["mieCoefficient"].value = 0.005;
+  skyU["mieDirectionalG"].value = 0.8;
+  const sunPos = new THREE.Vector3();
 
-  // sun + moon discs
-  const sunDisc = new THREE.Mesh(
-    new THREE.SphereGeometry(9, 20, 16),
-    new THREE.MeshBasicMaterial({ color: 0xfff3d0, fog: false })
-  );
+  // moon disc (visible at night)
   const moonDisc = new THREE.Mesh(
-    new THREE.SphereGeometry(6, 18, 14),
+    new THREE.SphereGeometry(7, 20, 16),
     new THREE.MeshBasicMaterial({ color: 0xdfe8ff, fog: false })
   );
-  scene.add(sunDisc, moonDisc);
+  moonDisc.material.transparent = true;
+  scene.add(moonDisc);
 
   // stars
   const starGeo = new THREE.BufferGeometry();
   const starArr = [];
-  for (let i = 0; i < 600; i++) {
+  for (let i = 0; i < 900; i++) {
     const a = Math.random() * Math.PI * 2;
-    const r = 350 + Math.random() * 180;
-    const y = 80 + Math.random() * 220;
+    const r = 900 + Math.random() * 600;
+    const y = 200 + Math.random() * 700;
     starArr.push(Math.cos(a) * r, y, Math.sin(a) * r);
   }
   starGeo.setAttribute("position", new THREE.Float32BufferAttribute(starArr, 3));
   const stars = new THREE.Points(
     starGeo,
-    new THREE.PointsMaterial({ color: 0xffffff, size: 1.4, transparent: true, opacity: 0, depthWrite: false, fog: false })
+    new THREE.PointsMaterial({ color: 0xffffff, size: 3.0, transparent: true, opacity: 0, depthWrite: false, fog: false })
   );
   scene.add(stars);
+
+  // =========================================================================
+  //  PROCEDURAL TEXTURES (tileable noise → albedo / normal / roughness maps)
+  // =========================================================================
+  function texRng(seed) {
+    let s = seed >>> 0;
+    return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+  }
+  // bilinear upsample of a wrapping grid → smooth, perfectly tileable field
+  function upsampleGrid(g, gs, size) {
+    const out = new Float32Array(size * size);
+    for (let y = 0; y < size; y++) {
+      const sy = (y / size) * gs;
+      const y0 = Math.floor(sy);
+      const fy = sy - y0;
+      const v = fy * fy * (3 - 2 * fy);
+      for (let x = 0; x < size; x++) {
+        const sx = (x / size) * gs;
+        const x0 = Math.floor(sx);
+        const fx = sx - x0;
+        const u = fx * fx * (3 - 2 * fx);
+        const i = (xx, yy) => g[(((yy % gs) + gs) % gs) * gs + (((xx % gs) + gs) % gs)];
+        const a = i(x0, y0), b = i(x0 + 1, y0), c = i(x0, y0 + 1), d = i(x0 + 1, y0 + 1);
+        const top = a + (b - a) * u;
+        out[y * size + x] = top + (c + (d - c) * u - top) * v;
+      }
+    }
+    return out;
+  }
+  function fbmField(size, seed, octaves) {
+    const r = texRng(seed);
+    const h = new Float32Array(size * size);
+    let amp = 1, tot = 0;
+    for (let o = 0; o < octaves; o++) {
+      const gs = Math.max(2, 4 << o);
+      const g = new Float32Array(gs * gs);
+      for (let i = 0; i < g.length; i++) g[i] = r();
+      const up = upsampleGrid(g, gs, size);
+      for (let i = 0; i < h.length; i++) h[i] += up[i] * amp;
+      tot += amp;
+      amp *= 0.5;
+    }
+    for (let i = 0; i < h.length; i++) h[i] /= tot;
+    return h;
+  }
+  function heightToNormal(field, size, strength) {
+    const data = new Uint8Array(size * size * 4);
+    const at = (x, y) => field[(((y % size) + size) % size) * size + (((x % size) + size) % size)];
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const dx = (at(x - 1, y) - at(x + 1, y)) * strength;
+        const dy = (at(x, y - 1) - at(x, y + 1)) * strength;
+        const nz = 1;
+        const len = Math.hypot(dx, dy, nz) || 1;
+        const i = (y * size + x) * 4;
+        data[i] = (dx / len * 0.5 + 0.5) * 255;
+        data[i + 1] = (dy / len * 0.5 + 0.5) * 255;
+        data[i + 2] = (nz / len * 0.5 + 0.5) * 255;
+        data[i + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.NoColorSpace;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    tex.needsUpdate = true;
+    return tex;
+  }
+  function fieldToGray(field, size, lo, hi) {
+    const data = new Uint8Array(size * size * 4);
+    for (let i = 0; i < field.length; i++) {
+      const v = Math.round((lo + (hi - lo) * field[i]) * 255);
+      data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v;
+      data[i * 4 + 3] = 255;
+    }
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.NoColorSpace;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  const TEXSZ = gfx.high ? 512 : 256;
+  // micro surface relief reused across ground; mirrored via repeat tiling
+  const groundNormalTex = heightToNormal(fbmField(TEXSZ, 1337, 6), TEXSZ, 2.4);
+  const groundRoughTex = fieldToGray(fbmField(TEXSZ, 9001, 5), TEXSZ, 0.72, 0.99);
+  // water surface normals for the Water reflection shader
+  const waterNormalsTex = heightToNormal(fbmField(256, 4242, 5), 256, 1.5);
 
   // =========================================================================
   //  NOISE / TERRAIN
@@ -285,7 +383,23 @@
     geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
     geo.computeVertexNormals();
 
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.0 });
+    // micro-relief: tile the procedural normal/roughness maps densely so the
+    // ground reads as snow crust / rock / soil up close instead of flat color.
+    const nrm = groundNormalTex.clone();
+    nrm.needsUpdate = true;
+    nrm.repeat.set(WORLD / 5, WORLD / 5);
+    const rgh = groundRoughTex.clone();
+    rgh.needsUpdate = true;
+    rgh.repeat.set(WORLD / 5, WORLD / 5);
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 1.0,
+      metalness: 0.0,
+      normalMap: nrm,
+      normalScale: new THREE.Vector2(0.55, 0.55),
+      roughnessMap: rgh,
+      envMapIntensity: 0.6,
+    });
     if (terrainMesh) {
       scene.remove(terrainMesh);
       terrainMesh.geometry.dispose();
@@ -299,16 +413,19 @@
   // ---------------------------------------------------------------- water
   let waterMesh = null;
   function buildWater() {
-    const geo = new THREE.PlaneGeometry(WORLD, WORLD, 1, 1);
-    geo.rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x2f6f9e,
-      transparent: true,
-      opacity: 0.82,
-      roughness: 0.18,
-      metalness: 0.4,
+    waterNormalsTex.wrapS = waterNormalsTex.wrapT = THREE.RepeatWrapping;
+    const geo = new THREE.PlaneGeometry(WORLD, WORLD);
+    waterMesh = new Water(geo, {
+      textureWidth: gfx.high ? 512 : 256,
+      textureHeight: gfx.high ? 512 : 256,
+      waterNormals: waterNormalsTex,
+      sunDirection: new THREE.Vector3(0, 1, 0),
+      sunColor: 0xfff1d8,
+      waterColor: 0x213f56,
+      distortionScale: 3.0,
+      fog: !!scene.fog,
     });
-    waterMesh = new THREE.Mesh(geo, mat);
+    waterMesh.rotation.x = -Math.PI / 2;
     waterMesh.position.y = WATER_LEVEL;
     scene.add(waterMesh);
   }
@@ -2405,32 +2522,51 @@
     camera.position.z += (Math.random() - 0.5) * a;
   }
 
+  const _warm = new THREE.Color(0xff8a3c);
+  const _white = new THREE.Color(0xfff1d8);
+  const _fogDay = new THREE.Color(0xbcd2e0);
+  const _fogNight = new THREE.Color(0x10182a);
   function updateDayNight(dt) {
-    worldTime = (worldTime + dt / 260) % 1;
-    const day = Math.max(0, Math.sin(worldTime * Math.PI * 2));
+    worldTime = (worldTime + dt / 300) % 1;
+    const s = Math.sin(worldTime * Math.PI * 2);
+    const day = Math.max(0, s);
     dayLight = day;
-    // sky colors
-    skyUniforms.top.value.setHSL(0.6, 0.55, 0.12 + day * 0.38);
-    skyUniforms.bottom.value.setHSL(0.58, 0.4, 0.28 + day * 0.55);
-    scene.fog.color.setHSL(0.58, 0.32, 0.22 + day * 0.55);
-    renderer.toneMappingExposure = 0.7 + day * 0.5;
-    sun.intensity = 0.25 + day * 1.35;
-    hemi.intensity = 0.25 + day * 0.7;
-    ambient.intensity = 0.18 + day * 0.18;
-    stars.material.opacity = Math.max(0, 0.9 - day * 1.2);
+    const elevDeg = s * 62; // sun dips below the horizon at night
+    const horizon = Math.max(0, 1 - Math.abs(elevDeg) / 14); // golden-hour weight
 
-    const a = worldTime * Math.PI * 2;
-    const sx = Math.cos(a) * 160;
-    const sy = Math.sin(a) * 150 + 30;
-    const sz = Math.sin(a * 0.6) * 120;
-    sun.position.set(player.pos.x + sx, sy, player.pos.z + sz);
-    sun.target.position.set(player.pos.x, player.pos.y, player.pos.z);
-    sunDisc.position.set(player.pos.x + sx * 1.6, sy * 1.4, player.pos.z + sz * 1.6);
-    moonDisc.position.set(player.pos.x - sx * 1.6, -sy * 1.4 + 40, player.pos.z - sz * 1.6);
-    moonDisc.material.opacity = Math.max(0.15, 1 - day);
-    moonDisc.material.transparent = true;
+    // sun direction (drives Sky scattering, the shadow light, and water specular)
+    const phi = THREE.MathUtils.degToRad(90 - elevDeg);
+    const theta = THREE.MathUtils.degToRad(worldTime * 360 + 70);
+    sunPos.setFromSphericalCoords(1, phi, theta);
+    skyU["sunPosition"].value.copy(sunPos);
+    skyU["turbidity"].value = 6 + horizon * 6;
+    skyU["rayleigh"].value = 1.5 + horizon * 2.0 + (1 - day) * 0.5;
     sky.position.copy(player.pos);
+
+    // directional sun light follows the sky's sun
+    sun.position.copy(player.pos).addScaledVector(sunPos, 220);
+    sun.target.position.copy(player.pos);
+    sun.intensity = 0.05 + day * 3.1;
+    sun.color.copy(_white).lerp(_warm, horizon * 0.8);
+    hemi.intensity = 0.25 + day * 1.0;
+    ambient.intensity = 0.12 + day * 0.3;
+
+    // atmosphere
+    scene.fog.color.copy(_fogNight).lerp(_fogDay, day);
+    scene.fog.density = 0.0052 - day * 0.0016;
+    renderer.toneMappingExposure = 0.42 + day * 0.62;
+
+    // celestial extras
+    stars.material.opacity = Math.max(0, 0.95 - day * 1.6);
     stars.position.copy(player.pos);
+    moonDisc.position.copy(player.pos).addScaledVector(sunPos, -260);
+    moonDisc.material.opacity = Math.max(0, 0.85 - day * 1.4);
+
+    // water specular tracks the sun
+    if (waterMesh) {
+      waterMesh.material.uniforms["sunDirection"].value.copy(sunPos).normalize();
+      waterMesh.material.uniforms["sunColor"].value.copy(sun.color);
+    }
   }
 
   function updateWeather(dt) {
@@ -2598,6 +2734,82 @@
   }
 
   // =========================================================================
+  //  POST-PROCESSING  (SSAO → bloom → FXAA → tone-map/output)
+  // =========================================================================
+  let composer = null;
+  let bloomPass = null;
+  let ssaoPass = null;
+  let fxaaPass = null;
+
+  function buildComposer() {
+    if (composer) composer.dispose();
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const pr = renderer.getPixelRatio();
+    let target;
+    if (gfx.high) {
+      target = new THREE.WebGLRenderTarget(Math.floor(w * pr), Math.floor(h * pr), {
+        type: THREE.HalfFloatType,
+        samples: 4,
+      });
+    }
+    composer = new EffectComposer(renderer, target);
+    composer.setPixelRatio(pr);
+    composer.setSize(w, h);
+    composer.addPass(new RenderPass(scene, camera));
+
+    if (gfx.high) {
+      ssaoPass = new SSAOPass(scene, camera, w, h);
+      ssaoPass.kernelRadius = 10;
+      ssaoPass.minDistance = 0.0022;
+      ssaoPass.maxDistance = 0.09;
+      composer.addPass(ssaoPass);
+    } else {
+      ssaoPass = null;
+    }
+
+    bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), gfx.high ? 0.55 : 0.4, 0.6, 0.82);
+    composer.addPass(bloomPass);
+
+    fxaaPass = new ShaderPass(FXAAShader);
+    fxaaPass.material.uniforms["resolution"].value.set(1 / (w * pr), 1 / (h * pr));
+    composer.addPass(fxaaPass);
+
+    composer.addPass(new OutputPass());
+  }
+
+  function resizeRenderer() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setPixelRatio(maxPixelRatio());
+    renderer.setSize(w, h);
+    const pr = renderer.getPixelRatio();
+    if (composer) {
+      composer.setPixelRatio(pr);
+      composer.setSize(w, h);
+    }
+    if (ssaoPass) ssaoPass.setSize(w, h);
+    if (bloomPass) bloomPass.setSize(w, h);
+    if (fxaaPass) fxaaPass.material.uniforms["resolution"].value.set(1 / (w * pr), 1 / (h * pr));
+  }
+
+  function setGraphics(high) {
+    gfx.high = high;
+    renderer.setPixelRatio(maxPixelRatio());
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    sun.shadow.mapSize.set(high ? 4096 : 2048, high ? 4096 : 2048);
+    if (sun.shadow.map) {
+      sun.shadow.map.dispose();
+      sun.shadow.map = null;
+    }
+    buildComposer();
+    if (ui.gfxBtn) ui.gfxBtn.textContent = high ? "✨ High" : "✨ Low";
+    showToast(high ? "Graphics: High (post-FX on)" : "Graphics: Low (faster)");
+  }
+
+  // =========================================================================
   //  MAIN LOOP
   // =========================================================================
   const clock = new THREE.Clock();
@@ -2660,7 +2872,9 @@
     requestAnimationFrame(loop);
     const dt = Math.min(0.05, clock.getDelta());
     if (started) update(dt);
-    renderer.render(scene, camera);
+    if (waterMesh) waterMesh.material.uniforms["time"].value += dt * 0.6;
+    if (composer) composer.render(dt);
+    else renderer.render(scene, camera);
   }
 
   // =========================================================================
@@ -2695,11 +2909,7 @@
     state.startInProgress = false;
   }
 
-  window.addEventListener("resize", () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+  window.addEventListener("resize", resizeRenderer);
 
   ui.start.addEventListener("click", (e) => {
     if (e.target === ui.start) begin();
@@ -2719,6 +2929,7 @@
   ui.shopBtn.addEventListener("click", () => toggleShop());
   ui.shopClose.addEventListener("click", () => ui.shop.classList.add("hidden"));
   ui.potionBtn.addEventListener("click", () => drinkPotion());
+  ui.gfxBtn.addEventListener("click", () => setGraphics(!gfx.high));
   ui.boardBtn.addEventListener("click", async () => {
     if (!started) return;
     ui.board.classList.toggle("hidden");
@@ -2754,6 +2965,9 @@
     lastPos.copy(player.pos);
     chooseQuest();
     renderStats();
+    buildComposer();
+    updateDayNight(0); // position sun/sky/water before the first frame renders
+    if (ui.gfxBtn) ui.gfxBtn.textContent = gfx.high ? "✨ High" : "✨ Low";
     if (isTouch) setupTouch();
     await loadLeaderboard();
     loop();
