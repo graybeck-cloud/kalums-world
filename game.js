@@ -81,6 +81,7 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
     bossName: document.getElementById("bossName"),
     bossFill: document.getElementById("bossFill"),
     cross: document.getElementById("cross"),
+    minimap: document.getElementById("minimap"),
     modeBadge: document.getElementById("modeBadge"),
     vignette: document.getElementById("vignette"),
     toast: document.getElementById("toast"),
@@ -733,7 +734,6 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
   let camPitch = 0.35;
   let camDist = 6.2;
   let cameraMode = 1; // 1 = third person, 0 = first person
-  let locked = false;
   const keys = Object.create(null);
   const mouseButtons = { left: false, right: false };
   let started = false;
@@ -798,6 +798,19 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
   // =========================================================================
   const runes = [];
   const RUNE_COUNT = 34;
+  // Shared geometry + material for every runestone. Sharing one (already
+  // compiled) material avoids a shader recompile when runes respawn, and the
+  // strong emissive lets UnrealBloom make them glow WITHOUT real point lights —
+  // per-rune lights used to change the scene light count on collection, which
+  // forced a full shader recompile (a visible freeze).
+  const runeGeo = new THREE.OctahedronGeometry(0.42, 0);
+  const runeMat = new THREE.MeshStandardMaterial({
+    color: 0x8ffce8,
+    emissive: 0x33e6c8,
+    emissiveIntensity: 2.4,
+    roughness: 0.2,
+    metalness: 0.3,
+  });
   function spawnRunes() {
     for (const r of runes) scene.remove(r.mesh);
     runes.length = 0;
@@ -809,15 +822,9 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
       const z = (Math.random() - 0.5) * (WORLD - 24);
       const h = terrainHeight(x, z);
       if (h < WATER_LEVEL + 1 || terrainNormalY(x, z) < 0.78) continue;
-      const mesh = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.42, 0),
-        new THREE.MeshStandardMaterial({ color: 0x6ff0d8, emissive: 0x1f9c86, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.3 })
-      );
+      const mesh = new THREE.Mesh(runeGeo, runeMat);
       mesh.castShadow = true;
       mesh.position.set(x, h + 1.1, z);
-      const glow = new THREE.PointLight(0x6ff0d8, 0.8, 6);
-      glow.position.set(0, 0, 0);
-      mesh.add(glow);
       scene.add(mesh);
       runes.push({ mesh, baseY: h + 1.1, t: Math.random() * 6, collected: false });
       made++;
@@ -1838,6 +1845,65 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
     renderQuest();
   }
 
+  // ---------------------------------------------------------------- minimap
+  let _mmCtx = null;
+  function updateMinimap() {
+    const cv = ui.minimap;
+    if (!cv) return;
+    const ctx = _mmCtx || (_mmCtx = cv.getContext("2d"));
+    if (!ctx) return;
+    const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2, rad = W / 2 - 2;
+    const R = 95; // world units from player to map edge
+    const sc = rad / R;
+    const px = player.pos.x, pz = player.pos.z;
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.clip();
+    const dot = (wx, wz, color, size) => {
+      const dx = wx - px, dz = wz - pz;
+      if (dx * dx + dz * dz > R * R) return;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(cx + dx * sc, cy + dz * sc, size, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    // village marker
+    if (village.built) {
+      const dx = village.x - px, dz = village.z - pz;
+      ctx.fillStyle = "rgba(255,206,107,0.95)";
+      ctx.fillRect(cx + dx * sc - 3, cy + dz * sc - 3, 6, 6);
+    }
+    for (const r of runes) if (!r.collected) dot(r.mesh.position.x, r.mesh.position.z, "#5ff0d8", 1.8);
+    for (const a of animals) dot(a.x, a.z, "rgba(205,185,155,0.8)", 1.6);
+    for (const n of npcs) dot(n.x, n.z, "#ffd87a", 2.0);
+    for (const en of enemies) if (en.active) dot(en.x, en.z, "#ff6b6b", 2.2);
+    if (boss.active) dot(boss.x, boss.z, "#c7a0ff", 3.6);
+    ctx.restore();
+    // player heading arrow at centre
+    const f = player.facing, ux = Math.sin(f), uy = Math.cos(f), pxn = -uy, pyn = ux;
+    ctx.fillStyle = "#eaf4ff";
+    ctx.strokeStyle = "rgba(10,18,28,0.7)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx + ux * 7, cy + uy * 7);
+    ctx.lineTo(cx - ux * 5 + pxn * 4, cy - uy * 5 + pyn * 4);
+    ctx.lineTo(cx - ux * 5 - pxn * 4, cy - uy * 5 - pyn * 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // border ring + north tick
+    ctx.strokeStyle = "rgba(190,225,255,0.3)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(190,225,255,0.7)";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("N", cx, 10);
+  }
+
   function setBackendBadge(online, text) {
     ui.backendDot.style.background = online ? "#54d27a" : "#7c8895";
     ui.backendText.textContent = text || (online ? "Backend Online" : "Backend Offline");
@@ -2153,21 +2219,19 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
   // =========================================================================
   //  INPUT
   // =========================================================================
-  function requestLock() {
-    try {
-      const p = canvas.requestPointerLock();
-      if (p && p.catch) p.catch(() => {});
-    } catch (e) {}
-  }
-  document.addEventListener("pointerlockchange", () => {
-    locked = document.pointerLockElement === canvas;
-  });
+  // Cursor stays visible for UI/UX. Hold the RIGHT mouse button and drag to
+  // look around; the wheel zooms the third-person camera.
   window.addEventListener("mousemove", (e) => {
-    if (!locked || !started) return;
-    camYaw -= e.movementX * 0.0022;
-    camPitch -= e.movementY * 0.0022;
+    if (!started || !mouseButtons.right) return;
+    camYaw -= e.movementX * 0.0026;
+    camPitch -= e.movementY * 0.0026;
     camPitch = clamp(camPitch, -0.4, 1.2);
   });
+  canvas.addEventListener("wheel", (e) => {
+    if (!started) return;
+    e.preventDefault();
+    camDist = clamp(camDist + Math.sign(e.deltaY) * 0.8, 2.6, 16);
+  }, { passive: false });
   window.addEventListener("keydown", (e) => {
     keys[e.code] = true;
     if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight"].includes(e.code)) e.preventDefault();
@@ -2201,20 +2265,20 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
   });
   canvas.addEventListener("mousedown", (e) => {
     if (!started || isTouch) return;
-    if (!locked) {
-      requestLock();
-      return;
-    }
     if (e.button === 0) {
       mouseButtons.left = true;
       swingSword();
     } else if (e.button === 2) {
       mouseButtons.right = true;
+      canvas.style.cursor = "grabbing";
     }
   });
   window.addEventListener("mouseup", (e) => {
     if (e.button === 0) mouseButtons.left = false;
-    if (e.button === 2) mouseButtons.right = false;
+    if (e.button === 2) {
+      mouseButtons.right = false;
+      canvas.style.cursor = "";
+    }
   });
   window.addEventListener("blur", () => {
     for (const k in keys) keys[k] = false;
@@ -2856,6 +2920,7 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
 
     checkQuest();
     renderStats();
+    updateMinimap();
     ui.px.textContent = Math.round(player.pos.x);
     ui.py.textContent = Math.round(player.pos.y);
     ui.pz.textContent = Math.round(player.pos.z);
@@ -2892,8 +2957,6 @@ import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
     if (isTouch) {
       ui.touch.classList.remove("hidden");
       ui.hint.textContent = "Left stick = move · Drag screen = look · Buttons = jump & attack";
-    } else {
-      requestLock();
     }
     await loadSave();
     await loadProfile();
