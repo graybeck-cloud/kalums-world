@@ -20,7 +20,7 @@ export default async function handler(req, res) {
       z: clamp(pos.z, -99999, 99999),
     },
     stats: {
-      health: clamp(st.health ?? 100, 0, 100),
+      health: clamp(st.health ?? 100, 0, 9999),
       energy: clamp(st.energy ?? 100, 0, 100),
       coins: clamp(st.coins ?? 0, 0, 99999999),
       cores: clamp(st.cores ?? 0, 0, 99999999),
@@ -29,6 +29,8 @@ export default async function handler(req, res) {
       distance: clamp(st.distance ?? 0, 0, 99999999),
       survivedSeconds: clamp(st.survivedSeconds ?? 0, 0, 99999999),
       score: clamp(st.score ?? 0, 0, 99999999),
+      armorTier: clamp(st.armorTier ?? 0, 0, 99),
+      potions: clamp(st.potions ?? 0, 0, 999),
     },
   };
 
