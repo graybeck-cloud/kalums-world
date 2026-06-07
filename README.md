@@ -2,7 +2,7 @@
 
 A realistic Nordic 3D adventure built with Three.js, deployed on **Vercel** with a **Supabase** Postgres backend for saves and a global leaderboard.
 
-Play: explore snowy wilds, gather glowing runestones, battle frost creatures, spend your gold on armor at the Armorsmith, and defeat the Frost King.
+Play: visit the village by the campfire and talk to its folk (**E** / 💬), buy armor from Bjorn the Smith and health potions from Sigrid the Trader, gather glowing runestones, hunt frost creatures across the wilds (deer roam and flee, birds circle overhead), watch the aurora at night, and defeat the Frost King. The village is a safe haven — foes won't spawn inside it, and it's where you respawn.
 
 ## Stack
 
@@ -43,3 +43,5 @@ Apply `supabase/schema.sql` to your Supabase project (via the SQL editor or MCP)
 WASD move · Mouse look · Left-Click sword · Space jump (stomp foes) · Shift sprint · F5 camera · M music
 
 Tap the **🛡️ Armor** button to open the Armorsmith and trade gold (earned from kills, runestones, and quests) for armor. Each suit reduces incoming damage and raises your max health.
+
+Walk up to a villager and press **E** (or tap 💬 on touch) to talk. Bjorn the Smith opens the armor shop; Sigrid the Trader sells health potions. Drink a potion with **Q** or the **🧪** button to restore health.

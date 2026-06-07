@@ -30,6 +30,7 @@ export default async function handler(req, res) {
       survivedSeconds: clamp(st.survivedSeconds ?? 0, 0, 99999999),
       score: clamp(st.score ?? 0, 0, 99999999),
       armorTier: clamp(st.armorTier ?? 0, 0, 99),
+      potions: clamp(st.potions ?? 0, 0, 999),
     },
   };
 

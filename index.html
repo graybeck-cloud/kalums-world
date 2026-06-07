@@ -151,6 +151,24 @@
   .armorBuy.owned{background:rgba(255,255,255,0.07);color:#9fb3c8;border-color:var(--panel-line);cursor:default;}
   .armorBuy.equipped{background:rgba(111,227,154,0.22);color:#a9f0c4;border-color:rgba(111,227,154,0.5);cursor:default;}
 
+  #interactPrompt{
+    position:absolute;left:50%;bottom:210px;transform:translateX(-50%);
+    background:rgba(10,18,28,0.82);border:1px solid var(--panel-line);border-radius:999px;
+    padding:7px 15px;font-size:13px;font-weight:600;color:#eaf4ff;backdrop-filter:blur(6px);
+    box-shadow:0 6px 18px rgba(0,0,0,0.4);
+  }
+  #interactPrompt b{display:inline-block;margin-right:7px;background:rgba(255,206,107,0.22);color:var(--gold);
+    border:1px solid rgba(255,206,107,0.45);border-radius:6px;padding:1px 8px;font-weight:800;}
+
+  #dialogue{
+    position:absolute;left:50%;bottom:120px;transform:translateX(-50%);
+    width:min(520px,calc(100vw - 28px));padding:15px 17px;pointer-events:auto;z-index:9;
+  }
+  #dlgName{font-family:'Cinzel',serif;font-size:17px;color:var(--gold);letter-spacing:0.4px;}
+  #dlgText{margin-top:7px;font-size:14px;font-weight:500;line-height:1.5;color:#e3eefa;min-height:42px;}
+  #dlgActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px;}
+  #dlgActions .btn{pointer-events:auto;}
+
   #toast{
     position:absolute;left:50%;bottom:150px;transform:translateX(-50%);
     background:rgba(10,18,28,0.92);border:1px solid var(--panel-line);border-radius:11px;
@@ -262,12 +280,13 @@
     <div id="bossMeter"><div id="bossFill"></div></div>
   </div>
 
-  <div id="hint">Move <b>WASD</b> · Look <b>Mouse</b> · Attack <b>L-Click</b> · Jump <b>Space</b> · Sprint <b>Shift</b> · Camera <b>F5</b> · Music <b>M</b></div>
+  <div id="hint">Move <b>WASD</b> · Look <b>Mouse</b> · Attack <b>L-Click</b> · Jump <b>Space</b> · Talk <b>E</b> · Potion <b>Q</b> · Camera <b>F5</b></div>
   <div id="modeBadge" class="panel">Camera: Third Person (F5)</div>
 
   <div id="actions">
     <button id="saveBtn" class="btn">Save</button>
     <button id="musicBtn" class="btn">🔊 Music</button>
+    <button id="potionBtn" class="btn">🧪 0</button>
     <button id="shopBtn" class="btn">🛡️ Armor</button>
     <button id="boardBtn" class="btn gold">Leaderboard</button>
   </div>
@@ -287,10 +306,17 @@
   <div id="touch" class="hidden">
     <div id="joy"><div id="joyKnob"></div></div>
     <div id="tbtns">
+      <button id="btnTalk" class="tbtn hidden">💬</button>
       <button id="btnSprint" class="tbtn">RUN</button>
       <button id="btnJump" class="tbtn">JUMP</button>
       <button id="btnAttack" class="tbtn atk">⚔️</button>
     </div>
+  </div>
+  <div id="interactPrompt" class="hidden"><b>E</b> <span id="interactText">Talk</span></div>
+  <div id="dialogue" class="panel hidden">
+    <div id="dlgName">Villager</div>
+    <p id="dlgText">...</p>
+    <div id="dlgActions"></div>
   </div>
   <div id="toast"></div>
   <div id="vignette"></div>
@@ -300,7 +326,7 @@
   <div id="startCard">
     <div id="bigIcon">⚔️</div>
     <h1>KALUM'S <span>WORLD</span></h1>
-    <p>A snowy Nordic realm of pine forests and misty peaks. Explore the wilds, gather glowing runes, battle frost creatures, and defeat the Frost King.</p>
+    <p>A snowy Nordic realm of pine forests and misty peaks. Visit the village by the campfire, talk to its folk, buy armor and potions, gather glowing runes, hunt frost creatures across the wilds, and defeat the Frost King.</p>
     <div id="nameWrap">
       <input id="nameInput" maxlength="18" value="KalumHero" placeholder="Hero name" />
       <button id="playbtn">Begin Adventure</button>
@@ -311,6 +337,8 @@
       <div class="ck"><b>L-Click</b>Swing sword</div>
       <div class="ck"><b>Space</b>Jump (stomp foes!)</div>
       <div class="ck"><b>Shift</b>Sprint</div>
+      <div class="ck"><b>E</b>Talk to villagers</div>
+      <div class="ck"><b>Q</b>Drink potion</div>
       <div class="ck"><b>🛡️</b>Spend gold on armor</div>
       <div class="ck"><b>F5</b>Camera view</div>
       <div class="ck"><b>M</b>Music</div>

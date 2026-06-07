@@ -55,6 +55,14 @@
     shopList: document.getElementById("shopList"),
     shopGold: document.getElementById("shopGold"),
     shopClose: document.getElementById("shopClose"),
+    potionBtn: document.getElementById("potionBtn"),
+    interactPrompt: document.getElementById("interactPrompt"),
+    interactText: document.getElementById("interactText"),
+    dialogue: document.getElementById("dialogue"),
+    dlgName: document.getElementById("dlgName"),
+    dlgText: document.getElementById("dlgText"),
+    dlgActions: document.getElementById("dlgActions"),
+    btnTalk: document.getElementById("btnTalk"),
     bossBar: document.getElementById("bossBar"),
     bossName: document.getElementById("bossName"),
     bossFill: document.getElementById("bossFill"),
@@ -560,7 +568,8 @@
       heroParts.plateMat.emissive.setHex(a.emissive || 0x000000);
     }
   }
-  applyArmorVisual();
+  // NOTE: applyArmorVisual() reads ARMORS (declared further below), so the
+  // initial call lives in bootstrap() once all module state is initialized.
 
   // =========================================================================
   //  PLAYER STATE
@@ -575,6 +584,17 @@
   const EYE = 1.55;
 
   function placePlayerStart() {
+    // spawn at the edge of the village — a safe haven to return to
+    if (village.built) {
+      const ang = Math.random() * Math.PI * 2;
+      const r = village.radius + 2;
+      const x = village.x + Math.cos(ang) * r;
+      const z = village.z + Math.sin(ang) * r;
+      player.pos.set(x, terrainHeight(x, z), z);
+      player.vy = 0;
+      player.facing = Math.atan2(village.x - x, village.z - z);
+      return;
+    }
     // find a pleasant lowland spawn near centre
     let best = null;
     for (let i = 0; i < 40; i++) {
@@ -619,7 +639,10 @@
     bossWins: 0,
     score: 0,
     armorTier: 0,
+    potions: 0,
   };
+  const POTION_COST = 40;
+  const POTION_HEAL = 45;
 
   // =========================================================================
   //  ARMOR (purchased with gold at the Armorsmith)
@@ -730,8 +753,15 @@
     const kind = pickKind();
     e.kind = kind;
     e.hp = kind.hp;
-    e.x = (Math.random() - 0.5) * (WORLD - 30);
-    e.z = (Math.random() - 0.5) * (WORLD - 30);
+    // keep the village a safe haven — never spawn foes inside it
+    let ex, ez, tries = 0;
+    do {
+      ex = (Math.random() - 0.5) * (WORLD - 30);
+      ez = (Math.random() - 0.5) * (WORLD - 30);
+      tries++;
+    } while (village.built && tries < 12 && Math.hypot(ex - village.x, ez - village.z) < village.radius + 8);
+    e.x = ex;
+    e.z = ez;
     e.vx = 0;
     e.vz = 0;
     e.cooldown = 0;
@@ -832,6 +862,688 @@
     camShake = 0.9;
     blip(720, 0.5, "triangle", 0.18);
     showToast(`🏆 You defeated the Frost King! +${reward} gold`);
+  }
+
+  // =========================================================================
+  //  VILLAGE  (a safe Nordic hamlet — huts, campfire, smoke, glowing windows)
+  // =========================================================================
+  const village = { x: 0, z: 0, y: 0, radius: 13, built: false };
+  const windowMats = [];      // hut window materials, brightened at night
+  const smokeEmitters = [];   // {x,y,z} sources for the smoke system
+  let campLight = null;
+  let campFlame = null;
+
+  function findVillageSite() {
+    let best = null;
+    let bestScore = -Infinity;
+    for (let i = 0; i < 80; i++) {
+      const x = (Math.random() - 0.5) * 80;
+      const z = (Math.random() - 0.5) * 80;
+      const h = terrainHeight(x, z);
+      if (h < WATER_LEVEL + 2 || h > 22) continue;
+      const flat = terrainNormalY(x, z);
+      const score = flat * 2 - Math.hypot(x, z) / 200;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x, z, h };
+      }
+    }
+    return best || { x: 0, z: 0, h: terrainHeight(0, 0) };
+  }
+
+  function buildHut(cx, cz, faceAngle) {
+    const g = new THREE.Group();
+    const wood = new THREE.MeshStandardMaterial({ color: 0x5a3f28, roughness: 0.9 });
+    const woodDk = new THREE.MeshStandardMaterial({ color: 0x42301d, roughness: 0.92 });
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0xdfeaf6, roughness: 0.78 });
+    const w = 2.6, d = 2.2, wallH = 1.8;
+
+    const walls = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), wood);
+    walls.position.y = wallH / 2;
+    walls.castShadow = walls.receiveShadow = true;
+    g.add(walls);
+
+    // a-frame snowy roof (4-sided pyramid sitting a little proud of the walls)
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(w * 0.92, 1.5, 4), roofMat);
+    roof.position.y = wallH + 0.7;
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    g.add(roof);
+
+    // door
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.2, 0.1), woodDk);
+    door.position.set(0, 0.6, d / 2 + 0.02);
+    g.add(door);
+
+    // glowing window (emissive — brightens at dusk, no extra light needed)
+    const winMat = new THREE.MeshStandardMaterial({ color: 0xffd98a, emissive: 0xffb24a, emissiveIntensity: 0.2, roughness: 0.5 });
+    windowMats.push(winMat);
+    const win = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.08), winMat);
+    win.position.set(w / 2 + 0.01, 1.0, 0.3);
+    win.rotation.y = Math.PI / 2;
+    g.add(win);
+
+    // chimney + smoke source
+    const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.7, 0.35), woodDk);
+    chimney.position.set(-w * 0.28, wallH + 0.9, -d * 0.2);
+    g.add(chimney);
+
+    g.position.set(cx, terrainHeight(cx, cz) - 0.1, cz);
+    g.rotation.y = faceAngle;
+    scene.add(g);
+
+    // smoke emitter at the chimney top (world space)
+    const sm = new THREE.Vector3(-w * 0.28, wallH + 1.3, -d * 0.2);
+    sm.applyAxisAngle(new THREE.Vector3(0, 1, 0), faceAngle);
+    smokeEmitters.push({ x: cx + sm.x, y: g.position.y + sm.y, z: cz + sm.z });
+  }
+
+  function buildCampfire(cx, cy, cz) {
+    const g = new THREE.Group();
+    g.position.set(cx, cy, cz);
+    scene.add(g);
+
+    // ring of stones
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x6f7780, roughness: 1 });
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const s = new THREE.Mesh(new THREE.DodecahedronGeometry(0.22, 0), stoneMat);
+      s.position.set(Math.cos(a) * 0.7, 0.12, Math.sin(a) * 0.7);
+      s.rotation.set(Math.random(), Math.random(), Math.random());
+      s.castShadow = true;
+      g.add(s);
+    }
+    // crossed logs
+    const logMat = new THREE.MeshStandardMaterial({ color: 0x3f2c1a, roughness: 0.95 });
+    for (let i = 0; i < 3; i++) {
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 1.1, 6), logMat);
+      log.position.y = 0.18;
+      log.rotation.z = Math.PI / 2;
+      log.rotation.y = (i / 3) * Math.PI;
+      log.castShadow = true;
+      g.add(log);
+    }
+    // flame
+    campFlame = new THREE.Group();
+    campFlame.position.y = 0.3;
+    const f1 = new THREE.Mesh(new THREE.ConeGeometry(0.32, 0.9, 8), new THREE.MeshBasicMaterial({ color: 0xff8b2a, transparent: true, opacity: 0.92 }));
+    f1.position.y = 0.45;
+    const f2 = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.55, 8), new THREE.MeshBasicMaterial({ color: 0xffe07a, transparent: true, opacity: 0.95 }));
+    f2.position.y = 0.34;
+    campFlame.add(f1, f2);
+    g.add(campFlame);
+
+    campLight = new THREE.PointLight(0xffa742, 1.8, 18);
+    campLight.position.y = 0.9;
+    g.add(campLight);
+
+    smokeEmitters.push({ x: cx, y: cy + 1.1, z: cz });
+  }
+
+  function buildVillage() {
+    const site = findVillageSite();
+    village.x = site.x;
+    village.z = site.z;
+    village.y = site.h;
+    village.built = true;
+
+    buildCampfire(site.x, site.h, site.z);
+
+    // huts in a loose ring facing the fire
+    const HUTS = 5;
+    for (let i = 0; i < HUTS; i++) {
+      const a = (i / HUTS) * Math.PI * 2 + 0.3;
+      const r = 8 + (i % 2) * 1.5;
+      const hx = site.x + Math.cos(a) * r;
+      const hz = site.z + Math.sin(a) * r;
+      buildHut(hx, hz, a + Math.PI); // doors/windows face inward toward the fire
+    }
+  }
+
+  // ---- smoke (shared drifting points for chimneys + campfire) --------------
+  const SMOKE_MAX = 90;
+  const smokeParts = [];
+  let smokePoints = null;
+  function initSmoke() {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(SMOKE_MAX * 3);
+    for (let i = 0; i < SMOKE_MAX; i++) {
+      smokeParts.push({ life: 0, vx: 0, vy: 0, vz: 0 });
+      pos[i * 3 + 1] = -999;
+    }
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    smokePoints = new THREE.Points(
+      geo,
+      new THREE.PointsMaterial({ color: 0xc2c9d2, size: 1.3, transparent: true, opacity: 0.16, depthWrite: false })
+    );
+    smokePoints.frustumCulled = false;
+    scene.add(smokePoints);
+  }
+  function updateSmoke(dt) {
+    if (!smokePoints || !smokeEmitters.length) return;
+    const arr = smokePoints.geometry.attributes.position.array;
+    const now = performance.now() * 0.001;
+    for (let i = 0; i < SMOKE_MAX; i++) {
+      const p = smokeParts[i];
+      if (p.life <= 0) {
+        const e = smokeEmitters[(Math.random() * smokeEmitters.length) | 0];
+        p.life = 2.6 + Math.random() * 2.6;
+        p.vx = (Math.random() - 0.5) * 0.25;
+        p.vy = 0.7 + Math.random() * 0.5;
+        p.vz = (Math.random() - 0.5) * 0.25;
+        arr[i * 3] = e.x + (Math.random() - 0.5) * 0.3;
+        arr[i * 3 + 1] = e.y;
+        arr[i * 3 + 2] = e.z + (Math.random() - 0.5) * 0.3;
+        continue;
+      }
+      p.life -= dt;
+      arr[i * 3] += (p.vx + Math.sin(now + i) * 0.12) * dt;
+      arr[i * 3 + 1] += p.vy * dt;
+      arr[i * 3 + 2] += (p.vz + Math.cos(now + i) * 0.12) * dt;
+    }
+    smokePoints.geometry.attributes.position.needsUpdate = true;
+  }
+
+  function updateVillage(dt) {
+    if (!village.built) return;
+    const night = 1 - dayLight;
+    for (const m of windowMats) m.emissiveIntensity = 0.12 + night * 1.25;
+    if (campLight) campLight.intensity = (0.9 + night * 1.4) * (0.78 + Math.random() * 0.4);
+    if (campFlame) {
+      const f = 0.85 + Math.sin(performance.now() * 0.02) * 0.1 + Math.random() * 0.08;
+      campFlame.scale.set(0.9 + Math.random() * 0.18, f, 0.9 + Math.random() * 0.18);
+      campFlame.rotation.y += dt * 1.5;
+    }
+    // soft crackle when warming by the fire
+    const dFire = Math.hypot(player.pos.x - village.x, player.pos.z - village.z);
+    if (dFire < 6 && Math.random() < dt * 0.7) blip(190 + Math.random() * 80, 0.07, "sawtooth", 0.04);
+  }
+
+  // =========================================================================
+  //  NPCs  (villagers you can talk to, trade and shop with)
+  // =========================================================================
+  const npcs = [];
+  let activeNpc = null;
+  const INTERACT_RANGE = 2.8;
+  const dlg = { npc: null, idx: 0 };
+
+  const NPC_DEFS = [
+    { role: "armor", name: "Bjorn the Smith", robe: 0x6a3b2a, hat: 0x2b2b2b, prop: "anvil",
+      lines: ["Cold iron, hot forge — that's the Nordic way.",
+              "Stouter armor turns aside the frost beasts. Bring gold and I'll fit you out."] },
+    { role: "merchant", name: "Sigrid the Trader", robe: 0x2f6e58, hat: 0x7a5a2a, prop: "pack",
+      lines: ["Warm elixirs against the bitter cold!",
+              "A health potion mends what claws have torn. Care for one?"] },
+    { role: "elder", name: "Elder Ulf", robe: 0x46466a, hat: 0x6a6a86, beard: true, staff: true,
+      lines: ["The Frost King stirs when the runestones gather...",
+              "Collect the glowing runes — they draw the King out to be felled.",
+              "Fell him, and our village may yet see spring again."] },
+    { role: "villager", name: "Astrid", robe: 0x7a4a64, hat: 0x9a6a4a,
+      lines: ["The pines hang heavy with snow this season.",
+              "Mind the wisps after dark — they bite!"] },
+    { role: "villager", name: "Leif", robe: 0x46587a, hat: 0x3a4a3a,
+      lines: ["Pulled three fish from the lake yesterday. A fine day!",
+              "Safe travels out there, wanderer."] },
+  ];
+
+  function buildHumanoid(def) {
+    const g = new THREE.Group();
+    const skin = new THREE.MeshStandardMaterial({ color: 0xe8b489, roughness: 0.7 });
+    const robe = new THREE.MeshStandardMaterial({ color: def.robe, roughness: 0.85 });
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x3a2f24, roughness: 0.9 });
+
+    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.32, 0.8, 10), robe);
+    torso.position.y = 0.95;
+    torso.castShadow = true;
+    g.add(torso);
+
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 14), skin);
+    head.position.y = 1.5;
+    head.castShadow = true;
+    g.add(head);
+
+    const hat = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.32, 10), new THREE.MeshStandardMaterial({ color: def.hat, roughness: 0.85 }));
+    hat.position.y = 1.66;
+    g.add(hat);
+
+    const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a120b });
+    const eL = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 8), eyeMat);
+    const eR = eL.clone();
+    eL.position.set(-0.07, 1.5, 0.18);
+    eR.position.set(0.07, 1.5, 0.18);
+    g.add(eL, eR);
+
+    if (def.beard) {
+      const beard = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.3, 8), new THREE.MeshStandardMaterial({ color: 0xe8eef5, roughness: 0.9 }));
+      beard.position.set(0, 1.32, 0.12);
+      beard.rotation.x = Math.PI;
+      g.add(beard);
+    }
+
+    const armGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.6, 8);
+    const aL = new THREE.Mesh(armGeo, robe);
+    const aR = new THREE.Mesh(armGeo, robe);
+    aL.position.set(-0.3, 0.98, 0);
+    aR.position.set(0.3, 0.98, 0);
+    aL.castShadow = aR.castShadow = true;
+    g.add(aL, aR);
+
+    if (def.staff) {
+      const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.5, 6), new THREE.MeshStandardMaterial({ color: 0x4a3622, roughness: 0.9 }));
+      staff.position.set(0.34, 0.75, 0.12);
+      g.add(staff);
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 12), new THREE.MeshStandardMaterial({ color: 0x9af0e0, emissive: 0x2f9c86, emissiveIntensity: 0.8 }));
+      orb.position.set(0.34, 1.55, 0.12);
+      g.add(orb);
+    }
+    if (def.prop === "pack") {
+      const pack = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.45, 0.28), new THREE.MeshStandardMaterial({ color: 0x6a4a2a, roughness: 0.9 }));
+      pack.position.set(0, 1.0, -0.32);
+      pack.castShadow = true;
+      g.add(pack);
+    }
+
+    const legGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.55, 8);
+    const lL = new THREE.Mesh(legGeo, legMat);
+    const lR = new THREE.Mesh(legGeo, legMat);
+    lL.position.set(-0.12, 0.32, 0);
+    lR.position.set(0.12, 0.32, 0);
+    lL.castShadow = lR.castShadow = true;
+    g.add(lL, lR);
+
+    return g;
+  }
+
+  function spawnNpcs() {
+    for (const n of npcs) scene.remove(n.mesh);
+    npcs.length = 0;
+    for (let i = 0; i < NPC_DEFS.length; i++) {
+      const def = NPC_DEFS[i];
+      const a = (i / NPC_DEFS.length) * Math.PI * 2 + 0.6;
+      const r = 3.2 + (i % 2) * 0.8;
+      const x = village.x + Math.cos(a) * r;
+      const z = village.z + Math.sin(a) * r;
+      const mesh = buildHumanoid(def);
+      mesh.position.set(x, terrainHeight(x, z), z);
+      // face the fire
+      mesh.rotation.y = Math.atan2(village.x - x, village.z - z);
+      scene.add(mesh);
+
+      if (def.prop === "anvil") {
+        const anvil = new THREE.Group();
+        const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.35, 0.3), new THREE.MeshStandardMaterial({ color: 0x33373c, roughness: 0.5, metalness: 0.7 }));
+        base.position.y = 0.18;
+        const top = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.18, 0.32), new THREE.MeshStandardMaterial({ color: 0x44494f, roughness: 0.4, metalness: 0.8 }));
+        top.position.y = 0.44;
+        anvil.add(base, top);
+        const ax = x + Math.cos(a) * 1.0;
+        const az = z + Math.sin(a) * 1.0;
+        anvil.position.set(ax, terrainHeight(ax, az), az);
+        anvil.children.forEach((c) => (c.castShadow = true));
+        scene.add(anvil);
+      }
+
+      npcs.push({ mesh, x, z, baseY: terrainHeight(x, z), def, name: def.name, role: def.role, bob: Math.random() * 6, faceFire: mesh.rotation.y });
+    }
+  }
+
+  function updateNpcs(dt) {
+    let nearest = null;
+    let nearestD = INTERACT_RANGE;
+    for (const n of npcs) {
+      n.bob += dt;
+      n.mesh.position.y = n.baseY + Math.sin(n.bob * 1.6) * 0.03;
+      const d = Math.hypot(n.x - player.pos.x, n.z - player.pos.z);
+      if (d < 5) {
+        // turn to face the player when they come close
+        const want = Math.atan2(player.pos.x - n.x, player.pos.z - n.z);
+        let diff = want - n.mesh.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        n.mesh.rotation.y += diff * Math.min(1, dt * 4);
+      } else {
+        let diff = n.faceFire - n.mesh.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        n.mesh.rotation.y += diff * Math.min(1, dt * 2);
+      }
+      if (d < nearestD) {
+        nearestD = d;
+        nearest = n;
+      }
+    }
+    activeNpc = nearest;
+
+    const busy = !ui.dialogue.classList.contains("hidden") || !ui.shop.classList.contains("hidden");
+    if (activeNpc && !busy) {
+      ui.interactText.textContent = `Talk to ${activeNpc.name}`;
+      if (isTouch) {
+        ui.interactPrompt.classList.add("hidden");
+        ui.btnTalk.classList.remove("hidden");
+      } else {
+        ui.interactPrompt.classList.remove("hidden");
+        ui.btnTalk.classList.add("hidden");
+      }
+    } else {
+      ui.interactPrompt.classList.add("hidden");
+      ui.btnTalk.classList.add("hidden");
+    }
+  }
+
+  // ---- dialogue -----------------------------------------------------------
+  function interact() {
+    if (!ui.dialogue.classList.contains("hidden")) {
+      advanceDialogue();
+      return;
+    }
+    if (!activeNpc) return;
+    openDialogue(activeNpc);
+  }
+  function openDialogue(npc) {
+    dlg.npc = npc;
+    dlg.idx = 0;
+    ui.interactPrompt.classList.add("hidden");
+    ui.btnTalk.classList.add("hidden");
+    ui.dialogue.classList.remove("hidden");
+    renderDialogue();
+    blip(540, 0.08, "sine", 0.1);
+  }
+  function renderDialogue() {
+    const n = dlg.npc;
+    if (!n) return;
+    ui.dlgName.textContent = n.name;
+    ui.dlgText.textContent = n.def.lines[Math.min(dlg.idx, n.def.lines.length - 1)];
+    const last = dlg.idx >= n.def.lines.length - 1;
+    let acts = "";
+    if (last && n.role === "merchant") acts += `<button class="btn gold" data-act="buyPotion">Buy Potion · ${POTION_COST}g</button>`;
+    if (last && n.role === "armor") acts += `<button class="btn gold" data-act="openShop">Browse Armor</button>`;
+    acts += last ? `<button class="btn" data-act="close">Farewell</button>` : `<button class="btn" data-act="next">Next ▸</button>`;
+    ui.dlgActions.innerHTML = acts;
+    ui.dlgActions.querySelectorAll("button[data-act]").forEach((b) => b.addEventListener("click", () => dlgAction(b.getAttribute("data-act"))));
+  }
+  function dlgAction(a) {
+    if (a === "next") {
+      dlg.idx++;
+      renderDialogue();
+    } else if (a === "close") {
+      closeDialogue();
+    } else if (a === "buyPotion") {
+      buyPotion();
+    } else if (a === "openShop") {
+      closeDialogue();
+      if (ui.shop.classList.contains("hidden")) toggleShop();
+    }
+  }
+  function advanceDialogue() {
+    const n = dlg.npc;
+    if (!n) return;
+    if (dlg.idx >= n.def.lines.length - 1) closeDialogue();
+    else {
+      dlg.idx++;
+      renderDialogue();
+    }
+  }
+  function closeDialogue() {
+    dlg.npc = null;
+    ui.dialogue.classList.add("hidden");
+  }
+
+  // ---- potions ------------------------------------------------------------
+  function refreshPotionBtn() {
+    ui.potionBtn.textContent = `🧪 ${stats.potions}`;
+  }
+  function buyPotion() {
+    if (stats.coins < POTION_COST) {
+      showToast("Not enough gold for a potion.");
+      blip(160, 0.14, "sawtooth", 0.14);
+      return;
+    }
+    stats.coins -= POTION_COST;
+    stats.potions++;
+    blip(720, 0.12, "triangle", 0.14);
+    showToast(`Bought a health potion. You have ${stats.potions}.`);
+    refreshPotionBtn();
+    renderStats();
+    if (!ui.dialogue.classList.contains("hidden")) renderDialogue();
+  }
+  function drinkPotion() {
+    if (stats.potions <= 0) {
+      showToast("No potions to drink. Buy some from Sigrid the Trader.");
+      return;
+    }
+    if (stats.health >= maxHealth()) {
+      showToast("You're already at full health.");
+      return;
+    }
+    stats.potions--;
+    stats.health = Math.min(maxHealth(), stats.health + POTION_HEAL);
+    spawnParticles(player.pos.x, player.pos.y + 1.0, player.pos.z, 0x6fe39a, 14, 3);
+    blip(880, 0.16, "sine", 0.16);
+    showToast(`🧪 Drank a potion. +${POTION_HEAL} health.`);
+    refreshPotionBtn();
+    renderStats();
+  }
+
+  // =========================================================================
+  //  WILDLIFE  (grazing deer + circling birds)
+  // =========================================================================
+  const animals = [];
+  const DEER_COUNT = 6;
+
+  function buildDeer() {
+    const g = new THREE.Group();
+    const hide = new THREE.MeshStandardMaterial({ color: 0x8a5a32, roughness: 0.9 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x5a3a20, roughness: 0.9 });
+
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 1.05, 8), hide);
+    body.rotation.z = Math.PI / 2;
+    body.position.y = 1.0;
+    body.castShadow = true;
+    g.add(body);
+
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.17, 0.6, 7), hide);
+    neck.position.set(0.52, 1.28, 0);
+    neck.rotation.z = -0.7;
+    neck.castShadow = true;
+    g.add(neck);
+
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.22, 0.22), hide);
+    head.position.set(0.82, 1.5, 0);
+    head.castShadow = true;
+    g.add(head);
+
+    const earMat = dark;
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.16, 5), earMat);
+    ear.position.set(0.78, 1.64, 0.1);
+    const ear2 = ear.clone();
+    ear2.position.z = -0.1;
+    g.add(ear, ear2);
+
+    const antMat = new THREE.MeshStandardMaterial({ color: 0xd8c6a0, roughness: 0.8 });
+    for (const side of [0.1, -0.1]) {
+      const a1 = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.42, 5), antMat);
+      a1.position.set(0.82, 1.78, side);
+      a1.rotation.z = 0.25;
+      a1.rotation.x = side > 0 ? 0.3 : -0.3;
+      g.add(a1);
+    }
+
+    const legGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.95, 6);
+    const legs = [];
+    for (const [lx, lz] of [[0.34, 0.2], [0.34, -0.2], [-0.34, 0.2], [-0.34, -0.2]]) {
+      const l = new THREE.Mesh(legGeo, dark);
+      l.position.set(lx, 0.48, lz);
+      l.castShadow = true;
+      g.add(l);
+      legs.push(l);
+    }
+    g.userData.legs = legs;
+    return g;
+  }
+
+  function spawnAnimals() {
+    for (const a of animals) scene.remove(a.mesh);
+    animals.length = 0;
+    let made = 0;
+    let attempts = 0;
+    while (made < DEER_COUNT && attempts < 200) {
+      attempts++;
+      const x = (Math.random() - 0.5) * (WORLD - 60);
+      const z = (Math.random() - 0.5) * (WORLD - 60);
+      const h = terrainHeight(x, z);
+      if (h < WATER_LEVEL + 1.5 || h > SNOW_LEVEL - 2 || terrainNormalY(x, z) < 0.86) continue;
+      if (Math.hypot(x - village.x, z - village.z) < village.radius + 6) continue;
+      const mesh = buildDeer();
+      mesh.position.set(x, h, z);
+      const dir = Math.random() * Math.PI * 2;
+      mesh.rotation.y = dir;
+      scene.add(mesh);
+      animals.push({ mesh, x, z, dir, speed: 0, phase: Math.random() * 6, wander: Math.random() * 4, scared: 0 });
+      made++;
+    }
+  }
+
+  function updateAnimals(dt) {
+    for (const a of animals) {
+      const dpx = a.x - player.pos.x;
+      const dpz = a.z - player.pos.z;
+      const dp = Math.hypot(dpx, dpz);
+      let targetSpeed;
+      if (dp < 9) {
+        // flee directly away from the player
+        a.dir = Math.atan2(-dpz, dpx);
+        a.scared = 1.2;
+        targetSpeed = 7.5;
+      } else if (a.scared > 0) {
+        a.scared -= dt;
+        targetSpeed = 5;
+      } else {
+        a.wander -= dt;
+        if (a.wander <= 0) {
+          a.wander = 2 + Math.random() * 4;
+          a.dir += (Math.random() - 0.5) * 1.6;
+        }
+        targetSpeed = Math.random() < 0.5 ? 0 : 1.4; // graze / amble
+      }
+      a.speed += (targetSpeed - a.speed) * Math.min(1, dt * 3);
+
+      const nx = a.x + Math.cos(a.dir) * a.speed * dt;
+      const nz = a.z - Math.sin(a.dir) * a.speed * dt;
+      const nh = terrainHeight(nx, nz);
+      // avoid water and steep cliffs / world edge
+      if (nh < WATER_LEVEL + 1 || terrainNormalY(nx, nz) < 0.8 || Math.abs(nx) > HALF - 12 || Math.abs(nz) > HALF - 12) {
+        a.dir += Math.PI * 0.7;
+        a.speed *= 0.3;
+      } else {
+        a.x = nx;
+        a.z = nz;
+      }
+      a.mesh.position.set(a.x, terrainHeight(a.x, a.z), a.z);
+      a.mesh.rotation.y = a.dir;
+
+      // leg gait while moving
+      const legs = a.mesh.userData.legs;
+      if (legs) {
+        a.phase += dt * (a.speed * 2 + 0.5);
+        const sw = Math.sin(a.phase) * Math.min(0.6, a.speed * 0.12);
+        legs[0].rotation.x = sw;
+        legs[3].rotation.x = sw;
+        legs[1].rotation.x = -sw;
+        legs[2].rotation.x = -sw;
+      }
+    }
+  }
+
+  // ---- birds (a small flock circling overhead by day) ---------------------
+  const birds = [];
+  let birdFlock = null;
+  function buildBirds() {
+    birdFlock = new THREE.Group();
+    scene.add(birdFlock);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.9 });
+    for (let i = 0; i < 8; i++) {
+      const b = new THREE.Group();
+      const wingGeo = new THREE.BoxGeometry(0.6, 0.04, 0.16);
+      const wl = new THREE.Mesh(wingGeo, mat);
+      const wr = new THREE.Mesh(wingGeo, mat);
+      wl.position.x = -0.3;
+      wr.position.x = 0.3;
+      b.add(wl, wr);
+      b.userData = { wl, wr, a: Math.random() * Math.PI * 2, r: 12 + Math.random() * 10, h: 26 + Math.random() * 10, flap: Math.random() * 6, spd: 0.18 + Math.random() * 0.12 };
+      birdFlock.add(b);
+      birds.push(b);
+    }
+  }
+  function updateBirds(dt) {
+    if (!birdFlock) return;
+    const day = dayLight;
+    birdFlock.visible = day > 0.25;
+    if (!birdFlock.visible) return;
+    for (const b of birds) {
+      const u = b.userData;
+      u.a += dt * u.spd;
+      u.flap += dt * 9;
+      const x = player.pos.x + Math.cos(u.a) * u.r;
+      const z = player.pos.z + Math.sin(u.a) * u.r;
+      b.position.set(x, player.pos.y + u.h + Math.sin(u.a * 2) * 2, z);
+      b.rotation.y = -u.a + Math.PI / 2;
+      const f = Math.sin(u.flap) * 0.5;
+      u.wl.rotation.z = f;
+      u.wr.rotation.z = -f;
+    }
+  }
+
+  // ---- aurora borealis (night sky ribbon) ---------------------------------
+  let auroraMesh = null;
+  function buildAurora() {
+    const geo = new THREE.PlaneGeometry(320, 70, 48, 1);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x49f5b0, transparent: true, opacity: 0, side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    auroraMesh = new THREE.Mesh(geo, mat);
+    auroraMesh.rotation.x = -Math.PI / 2.5;
+    scene.add(auroraMesh);
+  }
+  function updateAurora(dt) {
+    if (!auroraMesh) return;
+    const night = 1 - dayLight;
+    auroraMesh.material.opacity = Math.max(0, night - 0.25) * 0.45;
+    auroraMesh.position.set(player.pos.x, player.pos.y + 110, player.pos.z - 60);
+    if (auroraMesh.material.opacity <= 0.001) return;
+    const t = performance.now() * 0.0004;
+    const pos = auroraMesh.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      pos.setZ(i, Math.sin(x * 0.05 + t * 6) * 7 + Math.cos(x * 0.021 - t * 4) * 4);
+    }
+    pos.needsUpdate = true;
+    auroraMesh.material.color.setHSL(0.42 + Math.sin(t * 2) * 0.06, 0.8, 0.6);
+  }
+
+  // ---- ambient wind audio (very soft filtered noise loop) -----------------
+  let ambientStarted = false;
+  function startAmbient() {
+    if (ambientStarted) return;
+    try {
+      const ctx = ensureAudio();
+      const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = 420;
+      const g = ctx.createGain();
+      g.gain.value = 0.014;
+      src.connect(lp);
+      lp.connect(g);
+      g.connect(ctx.destination);
+      src.start();
+      ambientStarted = true;
+    } catch (e) {}
   }
 
   // =========================================================================
@@ -1173,6 +1885,7 @@
             survivedSeconds: +stats.survivedSeconds.toFixed(2),
             score: stats.score,
             armorTier: stats.armorTier | 0,
+            potions: stats.potions | 0,
           },
         },
       });
@@ -1197,6 +1910,7 @@
       }
       if (sv.stats) {
         stats.armorTier = clamp((+sv.stats.armorTier || 0) | 0, 0, ARMORS.length - 1);
+        stats.potions = clamp((+sv.stats.potions || 0) | 0, 0, 999);
         stats.health = clamp(+sv.stats.health || maxHealth(), 1, maxHealth());
         stats.energy = clamp(+sv.stats.energy || 100, 0, 100);
         stats.coins = (+sv.stats.coins || 0) | 0;
@@ -1351,7 +2065,19 @@
       e.preventDefault();
       toggleMusic();
     }
-    if (e.code === "Escape") ui.board.classList.add("hidden");
+    if (e.code === "KeyE" && started) {
+      e.preventDefault();
+      interact();
+    }
+    if (e.code === "KeyQ" && started) {
+      e.preventDefault();
+      drinkPotion();
+    }
+    if (e.code === "Escape") {
+      ui.board.classList.add("hidden");
+      ui.shop.classList.add("hidden");
+      closeDialogue();
+    }
   });
   window.addEventListener("keyup", (e) => {
     keys[e.code] = false;
@@ -1471,6 +2197,7 @@
     };
     bind(ui.btnJump, () => { touchBtn.jump = true; }, () => { touchBtn.jump = false; });
     bind(ui.btnAttack, () => { mouseButtons.left = true; swingSword(); }, () => { mouseButtons.left = false; });
+    bind(ui.btnTalk, () => { interact(); }, null);
     bind(ui.btnSprint, () => {
       touchBtn.sprint = !touchBtn.sprint;
       ui.btnSprint.classList.toggle("on", touchBtn.sprint);
@@ -1900,6 +2627,12 @@
     updateRunes(dt);
     updateEnemies(dt);
     updateBoss(dt);
+    updateVillage(dt);
+    updateNpcs(dt);
+    updateAnimals(dt);
+    updateBirds(dt);
+    updateAurora(dt);
+    updateSmoke(dt);
     updateParticles(dt);
     updateHeroVisual();
     updateCamera();
@@ -1953,9 +2686,11 @@
     renderStats();
     lastPos.copy(player.pos);
     await submitScore("session_start");
+    refreshPotionBtn();
     showToast(state.backendOnline ? "Adventure begins! Progress auto-saves." : "Adventure begins in offline mode.");
     blip(660, 0.1, "sine", 0.12);
     startMusic();
+    startAmbient();
     started = true;
     state.startInProgress = false;
   }
@@ -1983,6 +2718,7 @@
   ui.musicBtn.addEventListener("click", () => toggleMusic());
   ui.shopBtn.addEventListener("click", () => toggleShop());
   ui.shopClose.addEventListener("click", () => ui.shop.classList.add("hidden"));
+  ui.potionBtn.addEventListener("click", () => drinkPotion());
   ui.boardBtn.addEventListener("click", async () => {
     if (!started) return;
     ui.board.classList.toggle("hidden");
@@ -2004,9 +2740,17 @@
     buildRocks();
     buildGrass();
     initParticles();
+    applyArmorVisual();
+    buildVillage();
+    initSmoke();
+    spawnNpcs();
+    spawnAnimals();
+    buildBirds();
+    buildAurora();
     spawnRunes();
     spawnEnemies();
     placePlayerStart();
+    refreshPotionBtn();
     lastPos.copy(player.pos);
     chooseQuest();
     renderStats();
