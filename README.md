@@ -47,7 +47,9 @@ Apply `supabase/schema.sql` to your Supabase project (via the SQL editor or MCP)
 
 ## Controls
 
-WASD move · Mouse look · Left-Click sword · Space jump (stomp foes) · Shift sprint · F5 camera · M music
+WASD move · **Right-drag to look** · **Wheel to zoom** · Left-Click sword · Space jump (stomp foes) · Shift sprint · F5 camera · M music
+
+The mouse cursor stays visible for clicking HUD/shop/dialogue. A live **minimap** (top-right) shows the village (gold), runestones (cyan), villagers (yellow), enemies (red), and the boss (purple), with your heading at the centre.
 
 Tap the **🛡️ Armor** button to open the Armorsmith and trade gold (earned from kills, runestones, and quests) for armor. Each suit reduces incoming damage and raises your max health.
 

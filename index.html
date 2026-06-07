@@ -90,6 +90,13 @@
   #bossMeter{width:100%;height:15px;background:rgba(255,255,255,0.1);border:1px solid var(--panel-line);border-radius:999px;overflow:hidden;}
   #bossFill{width:100%;height:100%;background:linear-gradient(90deg,#8f6bff,#c7b0ff);transition:width 0.15s ease-out;}
 
+  #minimap{
+    position:absolute;top:84px;right:16px;width:140px;height:140px;border-radius:50%;
+    border:1px solid var(--panel-line);background:rgba(10,18,28,0.45);
+    box-shadow:0 8px 24px rgba(0,0,0,0.4);backdrop-filter:blur(4px);
+  }
+  @media (max-width:720px){#minimap{width:104px;height:104px;top:62px;right:12px;}}
+
   #cross{position:absolute;top:50%;left:50%;width:8px;height:8px;margin:-4px 0 0 -4px;
     border-radius:50%;background:rgba(255,255,255,0.85);box-shadow:0 0 0 2px rgba(0,0,0,0.4);display:none;}
 
@@ -274,13 +281,14 @@
   </div>
 
   <div id="title">KALUM'S WORLD<small>NORDIC ADVENTURE</small></div>
+  <canvas id="minimap" width="168" height="168"></canvas>
   <div id="cross"></div>
   <div id="bossBar" class="panel hidden">
     <div id="bossName">The Frost King</div>
     <div id="bossMeter"><div id="bossFill"></div></div>
   </div>
 
-  <div id="hint">Move <b>WASD</b> · Look <b>Mouse</b> · Attack <b>L-Click</b> · Jump <b>Space</b> · Talk <b>E</b> · Potion <b>Q</b> · Camera <b>F5</b></div>
+  <div id="hint">Move <b>WASD</b> · Look <b>Right-drag</b> · Zoom <b>Wheel</b> · Attack <b>L-Click</b> · Jump <b>Space</b> · Talk <b>E</b> · Potion <b>Q</b> · Camera <b>F5</b></div>
   <div id="modeBadge" class="panel">Camera: Third Person (F5)</div>
 
   <div id="actions">
@@ -334,7 +342,8 @@
     </div>
     <div id="ctrls">
       <div class="ck"><b>WASD</b>Move</div>
-      <div class="ck"><b>Mouse</b>Look</div>
+      <div class="ck"><b>Right-drag</b>Look around</div>
+      <div class="ck"><b>Wheel</b>Zoom</div>
       <div class="ck"><b>L-Click</b>Swing sword</div>
       <div class="ck"><b>Space</b>Jump (stomp foes!)</div>
       <div class="ck"><b>Shift</b>Sprint</div>
